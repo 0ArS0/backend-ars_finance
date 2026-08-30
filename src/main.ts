@@ -6,10 +6,15 @@ import { PrismaExceptionFilter } from './common/filters/prisma-exception.filter'
 
 config();
 
+const allowedOrigins = (process.env.FRONTEND_URL ?? 'http://localhost:3001,https://frontend-ars-finance.vercel.app')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   app.enableCors({
-    origin: process.env.FRONTEND_URL ?? 'http://localhost:3001',
+    origin: allowedOrigins,
     credentials: true
   });
   app.useGlobalPipes(new ValidationPipe({ transform: true, whitelist: true }));

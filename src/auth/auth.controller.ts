@@ -9,6 +9,7 @@ import { ChangePasswordDto, LoginDto, RegisterDto, UpdateProfileDto } from './dt
 const COOKIE_NAME = 'finance_session';
 const COOKIE_MAX_AGE = 30 * 24 * 60 * 60 * 1000;
 const COOKIE_SECURE = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+const COOKIE_SAME_SITE = process.env.NODE_ENV === 'production' ? 'None' : 'Lax';
 
 @Controller('api/auth')
 export class AuthController {
@@ -51,7 +52,7 @@ export class AuthController {
     await this.authService.logout(this.readCookie(request.headers.cookie));
     response.setHeader(
       'Set-Cookie',
-      `${COOKIE_NAME}=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax${COOKIE_SECURE}`
+      `${COOKIE_NAME}=; HttpOnly; Path=/; Max-Age=0; SameSite=${COOKIE_SAME_SITE}${COOKIE_SECURE}`
     );
     return { success: true };
   }
@@ -59,7 +60,7 @@ export class AuthController {
   private setCookie(response: Response, token: string) {
     response.setHeader(
       'Set-Cookie',
-      `${COOKIE_NAME}=${encodeURIComponent(token)}; HttpOnly; Path=/; Max-Age=${COOKIE_MAX_AGE / 1000}; SameSite=Lax${COOKIE_SECURE}`
+      `${COOKIE_NAME}=${encodeURIComponent(token)}; HttpOnly; Path=/; Max-Age=${COOKIE_MAX_AGE / 1000}; SameSite=${COOKIE_SAME_SITE}${COOKIE_SECURE}`
     );
   }
 
