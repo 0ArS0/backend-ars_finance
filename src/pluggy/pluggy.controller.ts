@@ -1,8 +1,8 @@
-import { Body, Controller, Post } from '@nestjs/common';
+import { Body, Controller, Get, Post } from '@nestjs/common';
 import { Public } from '../auth/auth.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { AuthenticatedUser } from '../auth/auth.types';
-import { CreateConnectTokenDto } from './dto/connect-token.dto';
+import { CreateConnectTokenDto, LinkPluggyConnectionDto } from './dto/connect-token.dto';
 import { ImportItemDto, PreviewItemDto } from './dto/sync-item.dto';
 import { PluggyService } from './pluggy.service';
 
@@ -12,7 +12,17 @@ export class PluggyController {
 
   @Post('connect-token')
   createConnectToken(@Body() body: CreateConnectTokenDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.pluggyService.createConnectToken(user.id);
+    return this.pluggyService.createConnectToken(user.id, body.itemId);
+  }
+
+  @Get('pluggy-connections')
+  listConnections(@CurrentUser() user: AuthenticatedUser) {
+    return this.pluggyService.listConnections(user.id);
+  }
+
+  @Post('pluggy-connections')
+  linkConnection(@Body() body: LinkPluggyConnectionDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.pluggyService.linkConnection(user.id, body);
   }
 
   @Post('preview')

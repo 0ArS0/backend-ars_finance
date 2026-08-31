@@ -88,6 +88,22 @@ model User {
   goals              Goal[]
   investmentAccounts InvestmentAccount[]
   appSettings        AppSetting[]
+  pluggyConnections  PluggyConnection[]
+}
+
+model PluggyConnection {
+  id            String        @id @default(uuid())
+  userId        String
+  itemId        String
+  label         String?
+  legalContext  LegalContext  @default(pf)
+  lastUpdatedAt DateTime?
+  createdAt     DateTime      @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, itemId])
+  @@index([userId])
 }
 
 model Session {

@@ -4,6 +4,7 @@ import { Account, CreditCardBills, Investment, Item, PluggyClient, Transaction }
 import { CreditCardsService } from '../credit-cards/credit-cards.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ImportRuleRecord, matchesRule } from '../imports/parsers/nubank.parser';
+import { LinkPluggyConnectionDto } from './dto/connect-token.dto';
 
 type CollectedAccount = {
   source: Account;
@@ -31,18 +32,47 @@ export class PluggyService {
     return new PluggyClient({ clientId, clientSecret });
   }
 
-  async createConnectToken(clientUserId: string) {
+  async createConnectToken(clientUserId: string, itemId?: string) {
     const pluggy = this.getClient();
-    const options = clientUserId ? { clientUserId } : undefined;
-    const connectToken = await pluggy.createConnectToken(undefined, options);
-    return { accessToken: connectToken.accessToken };
+    const connectToken = await pluggy.createConnectToken(itemId, {
+      clientUserId,
+      avoidDuplicates: true
+    });
+    return { accessToken: connectToken.accessToken, itemId: itemId ?? null };
+  }
+
+  async listConnections(userId: string) {
+    return this.prisma.pluggyConnection.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' }
+    });
+  }
+
+  async linkConnection(userId: string, dto: LinkPluggyConnectionDto) {
+    const item = await this.getClient().fetchItem(dto.itemId);
+    await this.ensureItemAccess(item, userId, true);
+    const connection = await this.prisma.pluggyConnection.upsert({
+      where: { userId_itemId: { userId, itemId: item.id } },
+      update: {
+        label: dto.label ?? item.connector.name,
+        legalContext: dto.legalContext ?? 'pf',
+        lastUpdatedAt: item.lastUpdatedAt ? new Date(item.lastUpdatedAt) : null
+      },
+      create: {
+        userId,
+        itemId: item.id,
+        label: dto.label ?? item.connector.name,
+        legalContext: dto.legalContext ?? 'pf',
+        lastUpdatedAt: item.lastUpdatedAt ? new Date(item.lastUpdatedAt) : null
+      }
+    });
+    return connection;
   }
 
   async previewItem(itemId: string, legalContext: LegalContext | undefined, userId: string) {
     const { item, accounts, investments } = await this.collectItem(itemId);
-    if (item.clientUserId && item.clientUserId !== userId) {
-      throw new InternalServerErrorException('Conexão Pluggy não pertence ao usuário atual');
-    }
+    await this.ensureItemAccess(item, userId, true);
+    await this.saveConnection(userId, item, legalContext);
     const resolvedLegalContext = this.resolveLegalContext(item, legalContext);
     const accountExternalIds = accounts.map(({ source }) => `pluggy-account:${source.id}`);
     const transactionExternalIds = accounts.flatMap(({ transactions }) =>
@@ -145,9 +175,8 @@ export class PluggyService {
     userId: string
   ) {
     const { item, accounts, investments } = await this.collectItem(itemId);
-    if (item.clientUserId && item.clientUserId !== userId) {
-      throw new InternalServerErrorException('Conexão Pluggy não pertence ao usuário atual');
-    }
+    await this.ensureItemAccess(item, userId, true);
+    await this.saveConnection(userId, item, legalContext);
     const resolvedLegalContext = this.resolveLegalContext(item, legalContext);
     const selectedAccounts = new Set(selectedAccountIds);
     const selectedTransactions = new Set(selectedTransactionIds);
@@ -343,6 +372,43 @@ export class PluggyService {
     }
 
     return { item, accounts, investments };
+  }
+
+  private async ensureItemAccess(item: Item, userId: string, allowLegacy = false) {
+    const ownedByAnotherUser = await this.prisma.pluggyConnection.findFirst({
+      where: { itemId: item.id, userId: { not: userId } },
+      select: { id: true }
+    });
+    if (ownedByAnotherUser) {
+      throw new InternalServerErrorException('Conexão Pluggy pertence a outro usuário');
+    }
+
+    const registered = await this.prisma.pluggyConnection.findUnique({
+      where: { userId_itemId: { userId, itemId: item.id } },
+      select: { id: true }
+    });
+    const isLegacyConnection = typeof item.clientUserId === 'string' && item.clientUserId.startsWith('finance-');
+    if (item.clientUserId && item.clientUserId !== userId && !registered && !(allowLegacy && isLegacyConnection)) {
+      throw new InternalServerErrorException('Conexão Pluggy não pertence ao usuário atual');
+    }
+  }
+
+  private async saveConnection(userId: string, item: Item, legalContext?: LegalContext) {
+    return this.prisma.pluggyConnection.upsert({
+      where: { userId_itemId: { userId, itemId: item.id } },
+      update: {
+        legalContext: legalContext ?? 'pf',
+        label: item.connector.name,
+        lastUpdatedAt: item.lastUpdatedAt ? new Date(item.lastUpdatedAt) : null
+      },
+      create: {
+        userId,
+        itemId: item.id,
+        legalContext: legalContext ?? 'pf',
+        label: item.connector.name,
+        lastUpdatedAt: item.lastUpdatedAt ? new Date(item.lastUpdatedAt) : null
+      }
+    });
   }
 
   private async fetchInvestments(pluggy: PluggyClient, itemId: string) {
