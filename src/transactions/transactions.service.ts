@@ -1,14 +1,17 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { AccountKind, PaymentMethod } from '@prisma/client';
+import { AccountKind, BudgetType, CategoryKind, IncomeKind, PaymentMethod } from '@prisma/client';
 import { isNotFoundError } from '../common/utils/prisma.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreditCardsService } from '../credit-cards/credit-cards.service';
-import { CreateTransactionDto, ListTransactionsQueryDto, UpdateTransactionDto } from './dto/transaction.dto';
+import { CreateTransactionDto, ListTransactionsQueryDto, UpdateTransactionDto, ClassifyInflowsDto } from './dto/transaction.dto';
+import { loadClassificationContext } from '../common/classification/load-classification-context';
+import { classifyMovement } from '../common/utils/inflow-classification.util';
+import { ImportRulesService } from '../imports/import-rules.service';
 import { buildTransactionWhere, toTransactionResponse } from './mappers/transaction.mapper';
 
 const transactionInclude = {
   account: { select: { id: true, name: true, legalContext: true, kind: true } },
-  category: { select: { id: true, name: true, budgetType: true } },
+  category: { select: { id: true, name: true, budgetType: true, kind: true } },
   payee: { select: { id: true, name: true } },
   beneficiary: { select: { id: true, name: true } },
   reimbursementOf: { select: { id: true, description: true, amount: true, transactionDate: true } },
@@ -23,16 +26,23 @@ const transactionInclude = {
 export class TransactionsService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly creditCardsService: CreditCardsService
+    private readonly creditCardsService: CreditCardsService,
+    private readonly importRulesService: ImportRulesService
   ) {}
 
   async list(userId: string, query: ListTransactionsQueryDto) {
-    const items = await this.prisma.transaction.findMany({
-      where: buildTransactionWhere({ ...query, userId }),
-      include: transactionInclude,
-      orderBy: { transactionDate: 'desc' }
-    });
-    return items.map(toTransactionResponse);
+    const [items, ctx] = await Promise.all([
+      this.prisma.transaction.findMany({
+        where: buildTransactionWhere({ ...query, userId }),
+        include: transactionInclude,
+        orderBy: { transactionDate: 'desc' }
+      }),
+      loadClassificationContext(this.prisma, userId)
+    ]);
+    return items.map((item) => ({
+      ...toTransactionResponse(item),
+      movementRole: classifyMovement(item, ctx)
+    }));
   }
 
   async listInflows(userId: string) {
@@ -41,7 +51,11 @@ export class TransactionsService {
       include: transactionInclude,
       orderBy: { transactionDate: 'desc' }
     });
-    return items.map(toTransactionResponse);
+    const ctx = await loadClassificationContext(this.prisma, userId);
+    return items.map((item) => ({
+      ...toTransactionResponse(item),
+      movementRole: classifyMovement(item, ctx)
+    }));
   }
 
   async listOutflows(userId: string) {
@@ -50,7 +64,11 @@ export class TransactionsService {
       include: transactionInclude,
       orderBy: { transactionDate: 'desc' }
     });
-    return items.map(toTransactionResponse);
+    const ctx = await loadClassificationContext(this.prisma, userId);
+    return items.map((item) => ({
+      ...toTransactionResponse(item),
+      movementRole: classifyMovement(item, ctx)
+    }));
   }
 
   async create(userId: string, dto: CreateTransactionDto) {
@@ -153,5 +171,69 @@ export class TransactionsService {
     });
 
     return toTransactionResponse(updated);
+  }
+
+  async classifyInflows(userId: string, dto: ClassifyInflowsDto) {
+    const items = await this.prisma.transaction.findMany({
+      where: { id: { in: dto.ids }, direction: 'inflow', account: { userId } },
+      select: { id: true, description: true }
+    });
+    if (items.length === 0) throw new NotFoundException('Nenhuma entrada encontrada');
+
+    const { incomeKind, categoryId } = await this.resolveClassification(userId, dto.role);
+    const applyToMatching = dto.applyToMatching !== false;
+
+    await this.prisma.transaction.updateMany({
+      where: { id: { in: items.map((item) => item.id) } },
+      data: {
+        incomeKind,
+        categoryId,
+        ...(dto.role !== 'reimbursement' ? { reimbursementOfId: null } : {})
+      }
+    });
+
+    if (dto.role !== 'reimbursement') {
+      await this.prisma.reimbursementExpense.deleteMany({
+        where: { reimbursementId: { in: items.map((item) => item.id) } }
+      });
+    } else if (dto.reimbursementOfIds?.length && items.length === 1) {
+      await this.update(userId, items[0].id, {
+        incomeKind,
+        reimbursementOfIds: dto.reimbursementOfIds
+      });
+    }
+
+    if (applyToMatching) {
+      const uniqueDescriptions = [...new Set(items.map((item) => item.description))];
+      for (const description of uniqueDescriptions) {
+        await this.importRulesService.upsertClassification(userId, description, incomeKind, categoryId);
+      }
+    }
+
+    return this.listInflows(userId);
+  }
+
+  private async resolveClassification(userId: string, role: ClassifyInflowsDto['role']) {
+    if (role === 'resgate') {
+      const reserve =
+        (await this.prisma.category.findFirst({ where: { userId, name: { equals: 'Reserva', mode: 'insensitive' } } })) ??
+        (await this.prisma.category.create({
+          data: { userId, name: 'Reserva', kind: CategoryKind.transfer, budgetType: BudgetType.fixed }
+        }));
+      return { incomeKind: IncomeKind.other as IncomeKind | null, categoryId: reserve.id };
+    }
+
+    const incomeKind =
+      role === 'faturamento'
+        ? IncomeKind.salary
+        : role === 'reimbursement'
+          ? IncomeKind.reimbursement
+          : role === 'gift'
+            ? IncomeKind.gift
+            : role === 'bonus'
+              ? IncomeKind.bonus
+              : IncomeKind.other;
+
+    return { incomeKind, categoryId: null as string | null };
   }
 }

@@ -27,16 +27,17 @@ export interface TransactionResponse {
   reimbursementOfIds: string[];
   statementId: string | null;
   account?: { id: string; name: string; legalContext: string; kind: string };
-  category?: { id: string; name: string; budgetType: string | null } | null;
+  category?: { id: string; name: string; budgetType: string | null; kind?: string | null } | null;
   payee?: { id: string; name: string } | null;
   beneficiary?: { id: string; name: string } | null;
   reimbursementOf?: { id: string; description: string; amount: number; transactionDate: string } | null;
   reimbursementExpenses?: { id: string; description: string; amount: number; transactionDate: string }[];
+  movementRole?: string;
 }
 
 type TransactionWithRelations = PrismaTransaction & {
   account?: { id: string; name: string; legalContext: string; kind: string };
-  category?: { id: string; name: string; budgetType: string | null } | null;
+  category?: { id: string; name: string; budgetType: string | null; kind?: string | null } | null;
   payee?: { id: string; name: string } | null;
   beneficiary?: { id: string; name: string } | null;
   reimbursementOf?: { id: string; description: string; amount: Prisma.Decimal; transactionDate: Date } | null;

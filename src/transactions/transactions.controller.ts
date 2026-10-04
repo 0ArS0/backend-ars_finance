@@ -1,5 +1,5 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
-import { CreateTransactionDto, ListTransactionsQueryDto, UpdateTransactionDto } from './dto/transaction.dto';
+import { CreateTransactionDto, ListTransactionsQueryDto, UpdateTransactionDto, ClassifyInflowsDto } from './dto/transaction.dto';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { AuthenticatedUser } from '../auth/auth.types';
 import { TransactionsService } from './transactions.service';
@@ -21,6 +21,11 @@ export class TransactionsController {
   @Get('outflows')
   listOutflows(@CurrentUser() user: AuthenticatedUser) {
     return this.transactionsService.listOutflows(user.id);
+  }
+
+  @Post('classify')
+  classifyInflows(@Body() body: ClassifyInflowsDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.transactionsService.classifyInflows(user.id, body);
   }
 
   @Post()

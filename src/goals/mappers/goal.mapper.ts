@@ -3,7 +3,11 @@ import { toDateOnlyString } from '../../common/utils/date.util';
 import { toNumber } from '../../common/utils/decimal.util';
 import { monthlyNeeded } from '../../common/utils/finance.util';
 
-export function toGoalResponse(goal: Goal & { links?: GoalLink[] }, allocated: number) {
+export function toGoalResponse(
+  goal: Goal & { links?: GoalLink[] },
+  allocated: number,
+  allocatedThisPeriod = 0
+) {
   const target = toNumber(goal.targetAmount);
   const remaining = Math.max(target - allocated, 0);
   return {
@@ -14,6 +18,7 @@ export function toGoalResponse(goal: Goal & { links?: GoalLink[] }, allocated: n
     priority: goal.priority,
     isActive: goal.isActive,
     allocated,
+    allocatedThisPeriod,
     remaining,
     monthlyNeeded: monthlyNeeded(remaining, goal.targetDate),
     links: (goal.links ?? []).map((link) => ({

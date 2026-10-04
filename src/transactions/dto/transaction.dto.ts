@@ -3,7 +3,7 @@ import {
   PaymentMethod,
   TransactionDirection
 } from '@prisma/client';
-import { IsArray, IsDateString, IsEnum, IsInt, IsNumber, IsOptional, IsPositive, IsString, MaxLength, Min } from 'class-validator';
+import { IsArray, IsBoolean, IsDateString, IsEnum, IsIn, IsInt, IsNumber, IsOptional, IsPositive, IsString, MaxLength, Min } from 'class-validator';
 import { PeriodQueryDto } from '../../common/dto/period-query.dto';
 
 export class CreateTransactionDto {
@@ -70,6 +70,24 @@ export class UpdateTransactionDto {
   @IsOptional()
   @IsEnum(IncomeKind)
   incomeKind?: IncomeKind | null;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  reimbursementOfIds?: string[];
+}
+
+export class ClassifyInflowsDto {
+  @IsArray()
+  @IsString({ each: true })
+  ids!: string[];
+
+  @IsIn(['faturamento', 'reimbursement', 'resgate', 'gift', 'bonus', 'other'])
+  role!: 'faturamento' | 'reimbursement' | 'resgate' | 'gift' | 'bonus' | 'other';
+
+  @IsOptional()
+  @IsBoolean()
+  applyToMatching?: boolean;
 
   @IsOptional()
   @IsArray()

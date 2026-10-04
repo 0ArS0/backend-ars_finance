@@ -10,6 +10,15 @@ export function compareYearMonth(a: YearMonth, b: YearMonth): number {
   return a.year * 12 + a.month - (b.year * 12 + b.month);
 }
 
+export function addYearMonth(value: YearMonth, delta: number): YearMonth {
+  const date = new Date(Date.UTC(value.year, value.month - 1 + delta, 1));
+  return { year: date.getUTCFullYear(), month: date.getUTCMonth() + 1 };
+}
+
+export function monthLabel(value: YearMonth) {
+  return `${MONTH_LABELS[value.month - 1]} ${value.year}`;
+}
+
 export function monthRangeUTC(year: number, month: number) {
   return {
     gte: new Date(Date.UTC(year, month - 1, 1)),
@@ -86,13 +95,16 @@ export function monthsBetween(from: Date, to: Date): number {
 export function expandRecurringDates(
   startDate: Date,
   endDate: Date | null,
-  frequency: 'daily' | 'weekly' | 'monthly' | 'yearly',
+  frequency: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'once',
   dayOfMonth: number | null,
   horizonEnd: Date
 ): Date[] {
+  const limit = endDate && endDate < horizonEnd ? endDate : horizonEnd;
+  if (startDate > limit) return [];
+  if (frequency === 'once') return [new Date(startDate)];
+
   const dates: Date[] = [];
   let current = new Date(startDate);
-  const limit = endDate && endDate < horizonEnd ? endDate : horizonEnd;
 
   while (current <= limit) {
     dates.push(new Date(current));

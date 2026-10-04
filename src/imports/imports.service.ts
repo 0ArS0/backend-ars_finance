@@ -7,7 +7,6 @@ import { CommitImportDto, PreviewImportDto } from './dto/import.dto';
 import {
   ImportRuleRecord,
   inferCategoryName,
-  isFamilyReimbursementInflow,
   isSalaryTransfer,
   isReserveTransferRule,
   matchesRule,
@@ -77,7 +76,11 @@ export class ImportsService {
       const familyReimbursement =
         row.direction === TransactionDirection.inflow &&
         !salaryInflow &&
-        isFamilyReimbursementInflow(row.description, row.counterparty);
+        Boolean(
+          matchedRule?.beneficiaryId &&
+            beneficiaries.find((item) => item.id === matchedRule.beneficiaryId)?.slug &&
+            beneficiaries.find((item) => item.id === matchedRule.beneficiaryId)?.slug !== 'eu'
+        );
 
       if (familyReimbursement) {
         incomeKind = IncomeKind.reimbursement;
@@ -127,7 +130,10 @@ export class ImportsService {
       if (row.direction === TransactionDirection.inflow && !incomeKind) {
         if (/reembolso/i.test(row.description)) {
           incomeKind = IncomeKind.reimbursement;
-        } else if (isFamilyReimbursementInflow(row.description, row.counterparty)) {
+        } else if (
+          matchedRule?.beneficiaryId &&
+          beneficiaries.find((item) => item.id === matchedRule.beneficiaryId)?.slug !== 'eu'
+        ) {
           incomeKind = IncomeKind.reimbursement;
         } else if (/valor adicionado|pix no cr[eé]dito|estorno|cr[eé]dito em conta/i.test(row.description)) {
           incomeKind = null;

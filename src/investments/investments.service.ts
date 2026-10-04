@@ -60,9 +60,52 @@ export class InvestmentsService {
 
   async getSummary(userId: string) {
     const holdings = await this.prisma.investmentHolding.findMany({ where: { account: { userId } } });
-    const items = holdings.map(toHoldingResponse);
+    const items = this.collapseSnapshotHoldings(holdings.map(toHoldingResponse))
+      .filter((item) => item.currentValue > 0.009 || item.investedAmount > 0.009)
+      .sort((left, right) => right.currentValue - left.currentValue);
     const total = items.reduce((sum, item) => sum + item.currentValue, 0);
-    return { total, holdings: items };
+    const invested = items.reduce((sum, item) => sum + item.investedAmount, 0);
+    return { total, invested, yieldAmount: total - invested, holdings: items };
+  }
+
+  private collapseSnapshotHoldings(items: ReturnType<typeof toHoldingResponse>[]) {
+    const groups = new Map<string, typeof items>();
+    for (const item of items) {
+      const key = this.holdingIdentity(item);
+      const list = groups.get(key) ?? [];
+      list.push(item);
+      groups.set(key, list);
+    }
+    return Array.from(groups.values()).map((members) => {
+      const lots = [...members].sort((left, right) => right.currentValue - left.currentValue);
+      const current = lots[0];
+      return {
+        ...current,
+        lots: lots.length > 1 ? lots : undefined
+      };
+    });
+  }
+
+  private holdingIdentity(item: ReturnType<typeof toHoldingResponse>) {
+    const folded = item.assetName
+      .normalize('NFD')
+      .replace(/\p{M}/gu, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9.%]+/gi, ' ')
+      .trim();
+    const product = folded.match(/\b(cdb|lci|lca|rdb|tesouro|fundo)\b/)?.[1] ?? 'ativo';
+    const due = folded.match(/\d{4}-\d{2}-\d{2}/)?.[0] ?? '';
+    const rate = folded.match(/(\d+[.,]?\d*)\s*%/)?.[1] ?? '';
+    const issuer = folded
+      .replace(/\d{4}-\d{2}-\d{2}/g, ' ')
+      .replace(/(\d+[.,]?\d*)\s*%/g, ' ')
+      .replace(/\b(cdb|lci|lca|rdb|tesouro|fundo|sa|s a|ltda|me|eireli|sociedade|credito|financiamento|investimento)\b/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .split(' ')
+      .slice(0, 2)
+      .join(' ');
+    return `${item.assetClass ?? ''}|${product}|${issuer}|${due}|${rate}`;
   }
 
   async getProjection(userId: string, query: InvestmentProjectionQueryDto) {
@@ -90,23 +133,29 @@ export class InvestmentsService {
     });
 
     if (!existing) {
-      if (type === InvestmentTransactionType.sell) return;
+      if (type === InvestmentTransactionType.sell || type === InvestmentTransactionType.dividend) return;
+      const investedAmount = quantity * unitPrice;
       await this.prisma.investmentHolding.create({
-        data: { accountId, assetSymbol, assetName, quantity, avgPrice: unitPrice }
+        data: { accountId, assetSymbol, assetName, quantity, avgPrice: unitPrice, investedAmount, currentValue: investedAmount }
       });
       return;
     }
 
     const currentQty = toNumber(existing.quantity);
     const currentAvg = toNumber(existing.avgPrice);
+    const currentInvested =
+      existing.investedAmount == null ? currentQty * currentAvg : toNumber(existing.investedAmount);
     let newQty = currentQty;
     let newAvg = currentAvg;
+    let investedAmount = currentInvested;
 
     if (type === InvestmentTransactionType.buy || type === InvestmentTransactionType.contribution) {
       newQty = currentQty + quantity;
-      newAvg = (currentQty * currentAvg + quantity * unitPrice) / newQty;
+      investedAmount = currentInvested + quantity * unitPrice;
+      newAvg = newQty > 0 ? investedAmount / newQty : 0;
     } else if (type === InvestmentTransactionType.sell) {
       newQty = Math.max(currentQty - quantity, 0);
+      investedAmount = currentQty > 0 ? currentInvested * (newQty / currentQty) : 0;
     }
 
     if (newQty === 0) {
@@ -114,7 +163,7 @@ export class InvestmentsService {
     } else {
       await this.prisma.investmentHolding.update({
         where: { id: existing.id },
-        data: { quantity: newQty, avgPrice: newAvg, assetName }
+        data: { quantity: newQty, avgPrice: newAvg, assetName, investedAmount }
       });
     }
   }

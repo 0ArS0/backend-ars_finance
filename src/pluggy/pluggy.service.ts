@@ -1,10 +1,11 @@
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
-import { AccountKind, IncomeKind, LegalContext, PaymentMethod, TransactionDirection } from '@prisma/client';
+import { AccountKind, CategoryKind, IncomeKind, LegalContext, PaymentMethod, TransactionDirection } from '@prisma/client';
 import { Account, CreditCardBills, Investment, Item, PluggyClient, Transaction } from 'pluggy-sdk';
 import { CreditCardsService } from '../credit-cards/credit-cards.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ImportRuleRecord, matchesRule } from '../imports/parsers/nubank.parser';
 import { LinkPluggyConnectionDto } from './dto/connect-token.dto';
+import { isPluggyCardPaymentCategory, mapPluggyCategory } from './pluggy-category.util';
 
 type CollectedAccount = {
   source: Account;
@@ -34,11 +35,16 @@ export class PluggyService {
 
   async createConnectToken(clientUserId: string, itemId?: string) {
     const pluggy = this.getClient();
-    const connectToken = await pluggy.createConnectToken(itemId, {
-      clientUserId,
-      avoidDuplicates: true
-    });
-    return { accessToken: connectToken.accessToken, itemId: itemId ?? null };
+    try {
+      const connectToken = await pluggy.createConnectToken(itemId, {
+        clientUserId,
+        avoidDuplicates: true
+      });
+      return { accessToken: connectToken.accessToken, itemId: itemId ?? null };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Não foi possível criar o token do Pluggy';
+      throw new InternalServerErrorException(message);
+    }
   }
 
   async listConnections(userId: string) {
@@ -121,7 +127,7 @@ export class PluggyService {
           selected: true
         };
       }),
-      investments: investments.map((investment) => ({
+      investments: investments.filter((investment) => this.isHeldInvestment(investment)).map((investment) => ({
         id: investment.id,
         type: investment.type,
         subtype: investment.subtype,
@@ -156,6 +162,14 @@ export class PluggyService {
             accountCurrency: source.currencyCode || 'BRL',
             balance: transaction.balance,
             category: transaction.category,
+            categoryId: transaction.categoryId,
+            cardLastDigits: transaction.creditCardMetadata?.cardNumber ?? null,
+            installments: transaction.creditCardMetadata
+              ? {
+                  current: transaction.creditCardMetadata.installmentNumber ?? null,
+                  total: transaction.creditCardMetadata.totalInstallments ?? null
+                }
+              : null,
             paymentMethod: this.resolvePaymentMethod(transaction, kind),
             payeeName: this.resolvePayeeName(transaction, direction),
             classification: isCardPayment ? 'Pagamento do cartão · lançado na conta bancária' : null,
@@ -181,9 +195,16 @@ export class PluggyService {
     const selectedAccounts = new Set(selectedAccountIds);
     const selectedTransactions = new Set(selectedTransactionIds);
     const defaultBeneficiary = await this.prisma.beneficiary.findFirst({ where: { slug: 'eu', userId } });
-    const reimbursementRules = await this.prisma.importMappingRule.findMany({
-      where: { isActive: true, incomeKind: IncomeKind.reimbursement, userId }
-    });
+    const [importRules, existingCategories, categoryCatalog] = await Promise.all([
+      this.prisma.importMappingRule.findMany({
+        where: { isActive: true, userId },
+        include: { beneficiary: { select: { slug: true } }, category: { select: { name: true, kind: true } } },
+        orderBy: { priority: 'desc' }
+      }),
+      this.prisma.category.findMany({ where: { userId } }),
+      this.fetchCategoryCatalog()
+    ]);
+    const categoryByName = new Map(existingCategories.map((category) => [category.name.toLowerCase(), category]));
     let imported = 0;
     let skipped = 0;
     let accountsImported = 0;
@@ -257,18 +278,39 @@ export class PluggyService {
         ).slice(0, 120);
         const notes = sourceTransaction.descriptionRaw || null;
         const direction = this.resolveTransactionDirection(sourceTransaction, kind);
+        const matchedRule = this.findMatchingRule(description, importRules);
+        const mappedCategory = mapPluggyCategory({
+          category: sourceTransaction.category,
+          categoryId: sourceTransaction.categoryId,
+          catalog: categoryCatalog,
+          direction
+        });
+        const category = await this.resolveImportCategory(
+          userId,
+          mappedCategory,
+          matchedRule?.categoryId,
+          categoryByName
+        );
         const incomeKind =
           direction === TransactionDirection.inflow
-            ? this.resolveReimbursementKind(description, reimbursementRules)
+            ? this.resolveIncomeKind(description, importRules, mappedCategory)
             : undefined;
+        const installmentN = sourceTransaction.creditCardMetadata?.installmentNumber ?? undefined;
+        const installmentTotal = sourceTransaction.creditCardMetadata?.totalInstallments ?? undefined;
         const existingTransaction = await this.prisma.transaction.findFirst({
           where: { externalId: transactionExternalId, accountId: account.id },
-          select: { id: true }
+          select: { id: true, categoryId: true }
         });
         if (existingTransaction) {
           await this.prisma.transaction.update({
             where: { id: existingTransaction.id },
-            data: { amount, incomeKind }
+            data: {
+              amount,
+              incomeKind,
+              categoryId: existingTransaction.categoryId ?? category?.id,
+              installmentN,
+              installmentTotal
+            }
           });
           skipped += 1;
           continue;
@@ -281,9 +323,18 @@ export class PluggyService {
             description,
             notes
           },
-          select: { id: true }
+          select: { id: true, categoryId: true }
         });
         if (existingFingerprint) {
+          await this.prisma.transaction.update({
+            where: { id: existingFingerprint.id },
+            data: {
+              incomeKind,
+              categoryId: existingFingerprint.categoryId ?? category?.id,
+              installmentN,
+              installmentTotal
+            }
+          });
           skipped += 1;
           continue;
         }
@@ -315,6 +366,9 @@ export class PluggyService {
             payeeId,
             beneficiaryId: direction === TransactionDirection.inflow ? defaultBeneficiary?.id : undefined,
             incomeKind,
+            categoryId: category?.id,
+            installmentN,
+            installmentTotal,
             statementId
           }
         });
@@ -437,15 +491,28 @@ export class PluggyService {
             legalContext
           }
         });
-    const symbols = new Set<string>();
+    const held = investments.filter((investment) => this.isHeldInvestment(investment));
+    if (held.length === 0) {
+      await this.prisma.investmentHolding.deleteMany({ where: { accountId: account.id } });
+      return 0;
+    }
 
-    for (const investment of investments) {
-      const assetSymbol = investment.code || investment.isin || investment.number || investment.id;
+    const latestBySymbol = new Map<string, (typeof held)[number]>();
+    for (const investment of held) {
+      const assetSymbol = this.investmentSymbol(investment);
+      const current = latestBySymbol.get(assetSymbol);
+      if (!current || this.investmentFreshness(investment) >= this.investmentFreshness(current)) {
+        latestBySymbol.set(assetSymbol, investment);
+      }
+    }
+
+    const symbols = [...latestBySymbol.keys()];
+
+    for (const [assetSymbol, investment] of latestBySymbol) {
       const quantity = investment.quantity && investment.quantity > 0 ? investment.quantity : 1;
-      const currentValue = investment.balance ?? investment.amount ?? investment.value ?? 0;
-      const costValue = investment.amountOriginal ?? investment.value ?? currentValue;
-      const avgPrice = costValue / quantity;
-      symbols.add(assetSymbol);
+      const currentValue = this.investmentCurrentValue(investment);
+      const investedAmount = this.investmentPrincipal(investment, currentValue);
+      const avgPrice = quantity > 0 ? investedAmount / quantity : 0;
       await this.prisma.investmentHolding.upsert({
         where: {
           accountId_assetSymbol: {
@@ -454,18 +521,20 @@ export class PluggyService {
           }
         },
         update: {
-          assetName: investment.name,
+          assetName: this.investmentLabel(investment),
           quantity,
           avgPrice,
+          investedAmount,
           currentValue,
           assetClass: this.resolveInvestmentClass(investment)
         },
         create: {
           accountId: account.id,
           assetSymbol,
-          assetName: investment.name,
+          assetName: this.investmentLabel(investment),
           quantity,
           avgPrice,
+          investedAmount,
           currentValue,
           assetClass: this.resolveInvestmentClass(investment)
         }
@@ -475,10 +544,84 @@ export class PluggyService {
     await this.prisma.investmentHolding.deleteMany({
       where: {
         accountId: account.id,
-        assetSymbol: { notIn: [...symbols] }
+        assetSymbol: { notIn: symbols }
       }
     });
-    return investments.length;
+    return latestBySymbol.size;
+  }
+
+  private isHeldInvestment(investment: Investment) {
+    if (investment.status === 'TOTAL_WITHDRAWAL') return false;
+    if (this.isIncomeOnlyInvestment(investment)) return false;
+    const worth = this.investmentCurrentValue(investment);
+    if (worth <= 0.009) return false;
+    if (investment.quantity != null && investment.quantity <= 0 && worth <= 0.009) return false;
+    return true;
+  }
+
+  private isIncomeOnlyInvestment(investment: Investment) {
+    const name = `${investment.name} ${investment.subtype ?? ''}`;
+    return /dividendo|jscp|juros sobre (o )?capital|rendimento creditado|coupon|cupom/i.test(name);
+  }
+
+  private investmentCurrentValue(investment: Investment) {
+    return investment.balance ?? investment.amount ?? investment.value ?? 0;
+  }
+
+  private investmentPrincipal(investment: Investment, currentValue: number) {
+    const original = investment.amountOriginal;
+    const profit = investment.amountProfit;
+    if (original != null && original > 0.009) {
+      if (profit != null && Math.abs(profit) > 0.009) {
+        const implied = currentValue - profit;
+        const originalLooksLikeCurrent =
+          currentValue > 0.009 && Math.abs(original - currentValue) / Math.max(currentValue, 1) < 0.02;
+        if (implied > 0.009 && originalLooksLikeCurrent && Math.abs(implied - original) > 1) {
+          return Math.round(implied * 100) / 100;
+        }
+      }
+      return Math.round(original * 100) / 100;
+    }
+    if (profit != null && Math.abs(profit) > 0.009) {
+      return Math.round(Math.max(0, currentValue - profit) * 100) / 100;
+    }
+    return Math.round(currentValue * 100) / 100;
+  }
+
+  private investmentSymbol(investment: Investment) {
+    if (investment.isin) return `isin:${investment.isin}`;
+    if (investment.code && investment.number) return `code:${investment.code}:${investment.number}`;
+    const due = investment.dueDate ? this.toDateOnlyString(investment.dueDate) : '';
+    const issue = investment.issueDate ? this.toDateOnlyString(investment.issueDate) : '';
+    const rate = investment.rate != null ? String(investment.rate) : '';
+    const name = this.foldInvestmentKey(investment.name);
+    const issuer = this.foldInvestmentKey(investment.issuerCNPJ || investment.issuer || '');
+    return ['cdb', name, issuer, due, issue, rate, investment.rateType ?? '', investment.subtype ?? ''].join(':').slice(0, 180);
+  }
+
+  private foldInvestmentKey(value: string) {
+    return value
+      .normalize('NFD')
+      .replace(/\p{M}/gu, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+  }
+
+  private investmentFreshness(investment: Investment) {
+    const stamp = investment.date ?? investment.purchaseDate ?? investment.issueDate;
+    const time = stamp ? new Date(stamp).getTime() : 0;
+    const worth = investment.balance ?? investment.amount ?? investment.value ?? 0;
+    return time + worth / 1e9;
+  }
+
+  private investmentLabel(investment: Investment) {
+    const subtype = investment.subtype?.replace(/_/g, ' ') ?? null;
+    const due = investment.dueDate ? this.toDateOnlyString(investment.dueDate) : null;
+    const parts = [investment.name, subtype, due, investment.rateType, investment.rate != null ? `${investment.rate}%` : null].filter(
+      Boolean
+    );
+    return Array.from(new Set(parts)).join(' · ');
   }
 
   private resolveInvestmentClass(investment: Investment) {
@@ -552,14 +695,18 @@ export class PluggyService {
     const text = [
       transaction.description,
       transaction.descriptionRaw,
-      transaction.paymentData?.reason
+      transaction.paymentData?.reason,
+      transaction.category
     ]
       .filter(Boolean)
       .join(' ')
       .normalize('NFD')
       .replace(/\p{M}/gu, '')
       .toLowerCase();
-    return /pagamento recebido|pagamento.*fatura|pagamento.*cartao|credit card payment|payment received/.test(text);
+    return (
+      /pagamento recebido|pagamento.*fatura|pagamento.*cartao|credit card payment|payment received/.test(text) ||
+      isPluggyCardPaymentCategory(transaction.category, transaction.categoryId)
+    );
   }
 
   private resolvePaymentMethod(transaction: Transaction, accountKind: AccountKind): PaymentMethod {
@@ -570,20 +717,77 @@ export class PluggyService {
     return PaymentMethod.debit;
   }
 
-  private resolveReimbursementKind(description: string, rules: ImportRuleRecord[]) {
-    if (rules.some((rule) => matchesRule(description, rule))) {
-      return IncomeKind.reimbursement;
+  private async fetchCategoryCatalog() {
+    try {
+      const pluggy = this.getClient() as PluggyClient & {
+        fetchCategories?: () => Promise<{ results?: Array<{
+          id: string;
+          description?: string;
+          descriptionTranslated?: string;
+          parentId?: string;
+          parentDescription?: string;
+        }> } | Array<{
+          id: string;
+          description?: string;
+          descriptionTranslated?: string;
+          parentId?: string;
+          parentDescription?: string;
+        }>>;
+      };
+      if (!pluggy.fetchCategories) return [];
+      const response = await pluggy.fetchCategories();
+      return Array.isArray(response) ? response : response.results ?? [];
+    } catch {
+      return [];
     }
+  }
 
-    const text = description
-      .normalize('NFD')
-      .replace(/\p{M}/gu, '')
-      .toLowerCase();
-    if (/estorno|elizama|victor da silva monteiro|droga raia|raia drogasil|ifood/.test(text)) {
-      return IncomeKind.reimbursement;
-    }
+  private findMatchingRule<T extends ImportRuleRecord>(description: string, rules: T[]): T | null {
+    return rules.find((rule) => matchesRule(description, rule)) ?? null;
+  }
 
+  private resolveIncomeKind(
+    description: string,
+    rules: Array<ImportRuleRecord & { beneficiary?: { slug?: string | null } | null }>,
+    mappedCategory: ReturnType<typeof mapPluggyCategory>
+  ) {
+    const matched = this.findMatchingRule(description, rules);
+    if (matched?.incomeKind) return matched.incomeKind;
+    if (matched?.beneficiary?.slug && matched.beneficiary.slug !== 'eu') return IncomeKind.reimbursement;
+    if (/reembolso/i.test(description)) return IncomeKind.reimbursement;
+    if (mappedCategory?.incomeKind) return mappedCategory.incomeKind;
+    if (mappedCategory?.kind === CategoryKind.income) return IncomeKind.other;
+    if (mappedCategory?.roleHint === 'faturamento') return IncomeKind.other;
     return IncomeKind.other;
+  }
+
+  private async resolveImportCategory(
+    userId: string,
+    mapped: ReturnType<typeof mapPluggyCategory>,
+    ruleCategoryId: string | null | undefined,
+    categoryByName: Map<string, { id: string; name: string }>
+  ) {
+    if (ruleCategoryId) {
+      const fromRule = [...categoryByName.values()].find((category) => category.id === ruleCategoryId);
+      if (fromRule) return fromRule;
+    }
+    if (!mapped) return null;
+    const existing = categoryByName.get(mapped.name.toLowerCase());
+    if (existing) return existing;
+    const created = await this.prisma.category.create({
+      data: {
+        userId,
+        name: mapped.name,
+        kind: mapped.kind,
+        budgetType: mapped.budgetType
+      }
+    });
+    categoryByName.set(created.name.toLowerCase(), created);
+    return created;
+  }
+
+  private resolveReimbursementKind(description: string, rules: ImportRuleRecord[]) {
+    return this.resolveIncomeKind(description, rules, null);
   }
 
   private resolvePayeeName(transaction: Transaction, direction: TransactionDirection) {

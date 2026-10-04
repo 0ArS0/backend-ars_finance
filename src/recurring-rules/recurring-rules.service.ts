@@ -10,6 +10,7 @@ export class RecurringRulesService {
   async list(userId: string) {
     const items = await this.prisma.recurringRule.findMany({
       where: { account: { userId } },
+      include: { account: { select: { name: true, kind: true } } },
       orderBy: { startDate: 'asc' }
     });
     return items.map(toRecurringRuleResponse);
@@ -26,12 +27,15 @@ export class RecurringRulesService {
       const beneficiary = await this.prisma.beneficiary.findFirst({ where: { id: dto.beneficiaryId, userId } });
       if (!beneficiary) throw new NotFoundException('Beneficiário não encontrado');
     }
+    const startDate = new Date(dto.startDate);
     const created = await this.prisma.recurringRule.create({
       data: {
         ...dto,
-        startDate: new Date(dto.startDate),
-        endDate: dto.endDate ? new Date(dto.endDate) : undefined
-      }
+        startDate,
+        endDate: dto.frequency === 'once' ? startDate : dto.endDate ? new Date(dto.endDate) : undefined,
+        dayOfMonth: dto.frequency === 'once' ? startDate.getUTCDate() : dto.dayOfMonth
+      },
+      include: { account: { select: { name: true, kind: true } } }
     });
     return toRecurringRuleResponse(created);
   }
@@ -52,13 +56,24 @@ export class RecurringRulesService {
         const beneficiary = await this.prisma.beneficiary.findFirst({ where: { id: dto.beneficiaryId, userId } });
         if (!beneficiary) throw new NotFoundException('Beneficiário não encontrado');
       }
+      const startDate = dto.startDate ? new Date(dto.startDate) : existing.startDate;
+      const frequency = dto.frequency ?? existing.frequency;
       const updated = await this.prisma.recurringRule.update({
         where: { id: existing.id },
         data: {
           ...dto,
-          startDate: dto.startDate ? new Date(dto.startDate) : undefined,
-          endDate: dto.endDate === null ? null : dto.endDate ? new Date(dto.endDate) : undefined
-        }
+          startDate: dto.startDate ? startDate : undefined,
+          endDate:
+            frequency === 'once'
+              ? startDate
+              : dto.endDate === null
+                ? null
+                : dto.endDate
+                  ? new Date(dto.endDate)
+                  : undefined,
+          dayOfMonth: frequency === 'once' ? startDate.getUTCDate() : dto.dayOfMonth
+        },
+        include: { account: { select: { name: true, kind: true } } }
       });
       return toRecurringRuleResponse(updated);
     } catch {

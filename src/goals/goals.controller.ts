@@ -1,7 +1,14 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { AuthenticatedUser } from '../auth/auth.types';
-import { AllocateGoalDto, CreateGoalDto, CreateGoalLinkDto, UpdateGoalDto } from './dto/goal.dto';
+import {
+  AllocateGoalDto,
+  CreateGoalDto,
+  CreateGoalLinkDto,
+  ListGoalsQueryDto,
+  SetAllocatedGoalDto,
+  UpdateGoalDto
+} from './dto/goal.dto';
 import { GoalsService } from './goals.service';
 
 @Controller('api/goals')
@@ -9,8 +16,8 @@ export class GoalsController {
   constructor(private readonly goalsService: GoalsService) {}
 
   @Get()
-  list(@CurrentUser() user: AuthenticatedUser) {
-    return this.goalsService.list(user.id);
+  list(@Query() query: ListGoalsQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.goalsService.list(user.id, query.year, query.month);
   }
 
   @Post()
@@ -41,6 +48,11 @@ export class GoalsController {
   @Post(':id/allocate')
   allocate(@Param('id') id: string, @Body() body: AllocateGoalDto, @CurrentUser() user: AuthenticatedUser) {
     return this.goalsService.allocate(user.id, id, body);
+  }
+
+  @Patch(':id/allocated')
+  setAllocated(@Param('id') id: string, @Body() body: SetAllocatedGoalDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.goalsService.setAllocated(user.id, id, body);
   }
 
   @Get(':id/progress')

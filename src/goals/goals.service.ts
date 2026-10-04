@@ -1,6 +1,6 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { AllocateGoalDto, CreateGoalDto, CreateGoalLinkDto, UpdateGoalDto } from './dto/goal.dto';
+import { AllocateGoalDto, CreateGoalDto, CreateGoalLinkDto, SetAllocatedGoalDto, UpdateGoalDto } from './dto/goal.dto';
 import { toGoalResponse } from './mappers/goal.mapper';
 import { toNumber } from '../common/utils/decimal.util';
 
@@ -8,13 +8,25 @@ import { toNumber } from '../common/utils/decimal.util';
 export class GoalsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async list(userId: string) {
+  async list(userId: string, year?: number, month?: number) {
+    const range = this.periodRange(year, month);
     const goals = await this.prisma.goal.findMany({
       where: { userId },
       orderBy: { priority: 'asc' },
-      include: { links: { orderBy: { createdAt: 'asc' } } }
+      include: {
+        links: { orderBy: { createdAt: 'asc' } },
+        allocations: { select: { amount: true, allocatedAt: true } }
+      }
     });
-    return Promise.all(goals.map(async (goal) => toGoalResponse(goal, await this.getAllocated(goal.id))));
+    return goals.map((goal) => {
+      const allocated = goal.allocations.reduce((sum, item) => sum + toNumber(item.amount), 0);
+      const allocatedThisPeriod = range
+        ? goal.allocations
+            .filter((item) => item.allocatedAt >= range.start && item.allocatedAt < range.end)
+            .reduce((sum, item) => sum + toNumber(item.amount), 0)
+        : allocated;
+      return toGoalResponse(goal, allocated, allocatedThisPeriod);
+    });
   }
 
   async create(userId: string, dto: CreateGoalDto) {
@@ -27,7 +39,7 @@ export class GoalsService {
         userId
       }
     });
-    return toGoalResponse(created, 0);
+    return toGoalResponse(created, 0, 0);
   }
 
   async update(userId: string, id: string, dto: UpdateGoalDto) {
@@ -76,6 +88,9 @@ export class GoalsService {
   async allocate(userId: string, id: string, dto: AllocateGoalDto) {
     const goal = await this.prisma.goal.findFirst({ where: { id, userId } });
     if (!goal) throw new NotFoundException('Meta não encontrada');
+    const current = await this.getAllocated(id);
+    const next = Math.round((current + dto.amount) * 100) / 100;
+    if (next < -0.009) throw new BadRequestException('O alocado não pode ficar negativo');
     if (dto.transactionId) {
       const transaction = await this.prisma.transaction.findFirst({
         where: { id: dto.transactionId, account: { userId } },
@@ -91,10 +106,33 @@ export class GoalsService {
     return toGoalResponse(goal, await this.getAllocated(id));
   }
 
+  async setAllocated(userId: string, id: string, dto: SetAllocatedGoalDto) {
+    const goal = await this.prisma.goal.findFirst({ where: { id, userId } });
+    if (!goal) throw new NotFoundException('Meta não encontrada');
+    const current = await this.getAllocated(id);
+    const next = Math.round(dto.allocated * 100) / 100;
+    const delta = Math.round((next - current) * 100) / 100;
+    if (Math.abs(delta) < 0.009) return toGoalResponse(goal, current);
+
+    await this.prisma.goalAllocation.create({
+      data: { goalId: id, amount: delta }
+    });
+
+    return toGoalResponse(goal, await this.getAllocated(id));
+  }
+
   async getProgress(userId: string, id: string) {
     const goal = await this.prisma.goal.findFirst({ where: { id, userId } });
     if (!goal) throw new NotFoundException('Meta não encontrada');
     return toGoalResponse(goal, await this.getAllocated(id));
+  }
+
+  private periodRange(year?: number, month?: number) {
+    if (!year || !month) return null;
+    return {
+      start: new Date(Date.UTC(year, month - 1, 1)),
+      end: new Date(Date.UTC(year, month, 1))
+    };
   }
 
   private async getAllocated(goalId: string) {

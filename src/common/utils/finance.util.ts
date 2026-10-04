@@ -76,7 +76,8 @@ export function buildProjection(
 }
 
 export function safeToSpend(projection: ProjectionDay[], date: string): number {
-  const day = projection.find((item) => item.date === date);
-  if (!day) return 0;
-  return Math.max(day.balance, 0);
+  const start = projection.findIndex((item) => item.date >= date);
+  if (start < 0) return 0;
+  const lowest = projection.slice(start).reduce((min, day) => Math.min(min, day.balance), Number.POSITIVE_INFINITY);
+  return Number.isFinite(lowest) ? lowest : 0;
 }

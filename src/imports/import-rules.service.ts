@@ -1,8 +1,13 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { ImportMatchType, Prisma } from '@prisma/client';
+import { ImportMatchType, IncomeKind, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateImportRuleDto, UpdateImportRuleDto } from './dto/import.dto';
-import { ImportRuleRecord, matchesRule } from './parsers/nubank.parser';
+import {
+  classificationPattern,
+  ImportRuleRecord,
+  matchesRule,
+  suggestedMatchType
+} from './parsers/nubank.parser';
 
 const ruleInclude = {
   beneficiary: { select: { id: true, name: true, slug: true } },
@@ -32,7 +37,7 @@ export class ImportRulesService {
       },
       include: ruleInclude
     });
-    await this.applyIncomeKind(rule, userId);
+    await this.applyClassification(rule, userId);
     return rule;
   }
 
@@ -46,7 +51,7 @@ export class ImportRulesService {
         data: dto,
         include: ruleInclude
       });
-      await this.applyIncomeKind(rule, userId);
+      await this.applyClassification(rule, userId);
       return rule;
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
@@ -72,8 +77,53 @@ export class ImportRulesService {
     if (dto.targetAccountId && !account) throw new NotFoundException('Conta não encontrada');
   }
 
-  private async applyIncomeKind(rule: ImportRuleRecord, userId: string) {
-    if (rule.incomeKind === null || rule.incomeKind === undefined) return;
+  async upsertClassification(
+    userId: string,
+    description: string,
+    incomeKind: IncomeKind | null,
+    categoryId?: string | null
+  ) {
+    const pattern = classificationPattern(description);
+    if (!pattern) return null;
+    const matchType = suggestedMatchType(pattern);
+    const existing = await this.prisma.importMappingRule.findFirst({
+      where: { userId, pattern, isActive: true }
+    });
+    const data = {
+      label: `${this.classificationLabel(incomeKind, categoryId)} · ${pattern}`.slice(0, 120),
+      pattern,
+      matchType,
+      incomeKind,
+      categoryId: categoryId ?? null,
+      priority: 110,
+      skip: false,
+      userId
+    };
+    const rule = existing
+      ? await this.prisma.importMappingRule.update({
+          where: { id: existing.id },
+          data,
+          include: ruleInclude
+        })
+      : await this.prisma.importMappingRule.create({
+          data,
+          include: ruleInclude
+        });
+    await this.applyClassification(rule, userId);
+    return rule;
+  }
+
+  private classificationLabel(incomeKind: IncomeKind | null, categoryId?: string | null) {
+    if (categoryId && incomeKind !== IncomeKind.reimbursement && incomeKind !== IncomeKind.salary) return 'Resgate';
+    if (incomeKind === IncomeKind.reimbursement) return 'Reembolso';
+    if (incomeKind === IncomeKind.salary || incomeKind === IncomeKind.freelance) return 'Faturamento';
+    if (incomeKind === IncomeKind.gift) return 'Presente';
+    if (incomeKind === IncomeKind.bonus) return 'Bônus';
+    return 'Entrada';
+  }
+
+  private async applyClassification(rule: ImportRuleRecord, userId: string) {
+    if (rule.incomeKind == null && !rule.categoryId) return;
 
     const transactions = await this.prisma.transaction.findMany({
       where: { direction: 'inflow', account: { userId } },
@@ -83,12 +133,15 @@ export class ImportRulesService {
       .filter((transaction) => matchesRule(transaction.description, rule))
       .map((transaction) => transaction.id);
 
-    if (matchingIds.length > 0) {
-      await this.prisma.transaction.updateMany({
-        where: { id: { in: matchingIds } },
-        data: { incomeKind: rule.incomeKind }
-      });
-    }
+    if (matchingIds.length === 0) return;
+
+    await this.prisma.transaction.updateMany({
+      where: { id: { in: matchingIds } },
+      data: {
+        ...(rule.incomeKind !== undefined ? { incomeKind: rule.incomeKind } : {}),
+        ...(rule.categoryId ? { categoryId: rule.categoryId } : {})
+      }
+    });
   }
 
   async remove(userId: string, id: string) {

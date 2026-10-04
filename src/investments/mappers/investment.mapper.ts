@@ -11,18 +11,21 @@ export function toInvestmentAccountResponse(account: InvestmentAccount) {
 }
 
 export function toHoldingResponse(holding: InvestmentHolding) {
+  const quantity = toNumber(holding.quantity);
+  const avgPrice = toNumber(holding.avgPrice);
+  const investedAmount =
+    holding.investedAmount == null ? Math.round(quantity * avgPrice * 100) / 100 : toNumber(holding.investedAmount);
   return {
     id: holding.id,
     accountId: holding.accountId,
     assetSymbol: holding.assetSymbol,
     assetName: holding.assetName,
-    quantity: toNumber(holding.quantity),
-    avgPrice: toNumber(holding.avgPrice),
+    quantity,
+    avgPrice,
+    investedAmount,
     assetClass: holding.assetClass,
     currentValue:
-      holding.currentValue == null
-        ? toNumber(holding.quantity) * toNumber(holding.avgPrice)
-        : toNumber(holding.currentValue)
+      holding.currentValue == null ? investedAmount : toNumber(holding.currentValue)
   };
 }
 

@@ -1,8 +1,12 @@
-import { RecurringRule } from '@prisma/client';
+import { AccountKind, RecurringRule } from '@prisma/client';
 import { toDateOnlyString } from '../../common/utils/date.util';
 import { toNumber } from '../../common/utils/decimal.util';
 
-export function toRecurringRuleResponse(rule: RecurringRule) {
+type RuleWithAccount = RecurringRule & {
+  account?: { name: string; kind: AccountKind };
+};
+
+export function toRecurringRuleResponse(rule: RuleWithAccount) {
   return {
     id: rule.id,
     accountId: rule.accountId,
@@ -15,6 +19,12 @@ export function toRecurringRuleResponse(rule: RecurringRule) {
     endDate: rule.endDate ? toDateOnlyString(rule.endDate) : null,
     budgetType: rule.budgetType,
     categoryId: rule.categoryId,
-    beneficiaryId: rule.beneficiaryId
+    beneficiaryId: rule.beneficiaryId,
+    account: rule.account
+      ? {
+          name: rule.account.name,
+          kind: rule.account.kind
+        }
+      : null
   };
 }

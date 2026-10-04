@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsDateString, IsInt, IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsDateString, IsInt, IsNumber, IsOptional, IsString, Max, Min, ValidateIf } from 'class-validator';
 
 export class ProjectionQueryDto {
   @IsOptional()
@@ -45,7 +45,49 @@ export class SafeToSpendQueryDto {
 
 export class UpdateProjectionSettingsDto {
   @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @Type(() => Number)
   @IsNumber()
   @Min(0)
   monthlyIncome?: number | null;
+
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  budgetInvestmentsPct?: number | null;
+
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  budgetExpensesPct?: number | null;
+
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  budgetRecreationPct?: number | null;
+
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  budgetGoalsPct?: number | null;
+
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  budgetCardPct?: number | null;
 }

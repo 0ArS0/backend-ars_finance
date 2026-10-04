@@ -192,6 +192,21 @@ export function matchesRule(description: string, rule: ImportRuleRecord): boolea
   return regex.test(haystack);
 }
 
+export function classificationPattern(description: string) {
+  return normalizeText(description)
+    .replace(/^\|+/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120);
+}
+
+export function suggestedMatchType(pattern: string): ImportMatchType {
+  const letters = pattern.replace(/[\d\s.|/-]/g, '');
+  const digits = pattern.replace(/\D/g, '');
+  if (digits.length >= 11 && letters.length < 3) return ImportMatchType.document;
+  return ImportMatchType.contains;
+}
+
 const FAMILY_REIMBURSEMENT_SOURCE =
   /(?:sergio(?:\s+da\s+silva\s+monteiro)?|dilma(?:\s+cosmo)?|\blyza\b|eliseu)/u;
 
