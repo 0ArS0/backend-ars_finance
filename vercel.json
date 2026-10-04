@@ -1,7 +1,0 @@
-{
-  "functions": {
-    "src/main.ts": {
-      "includeFiles": "{prisma/**,node_modules/.prisma/client/**,node_modules/@prisma/client/**}"
-    }
-  }
-}
