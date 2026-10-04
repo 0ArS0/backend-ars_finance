@@ -2,12 +2,14 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateBeneficiaryDto } from './dto/beneficiary.dto';
 import { toBeneficiaryResponse } from './mappers/beneficiary.mapper';
+import { ensureUserWorkspace } from '../common/workspace-defaults';
 
 @Injectable()
 export class BeneficiariesService {
   constructor(private readonly prisma: PrismaService) {}
 
   async list(userId: string) {
+    await ensureUserWorkspace(this.prisma, userId);
     const items = await this.prisma.beneficiary.findMany({ where: { userId }, orderBy: { name: 'asc' } });
     return items.map(toBeneficiaryResponse);
   }

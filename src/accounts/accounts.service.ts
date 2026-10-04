@@ -3,12 +3,14 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateAccountDto, UpdateAccountDto } from './dto/account.dto';
 import { toAccountResponse } from './mappers/account.mapper';
 import { assertFound } from '../common/utils/prisma.util';
+import { ensureUserWorkspace } from '../common/workspace-defaults';
 
 @Injectable()
 export class AccountsService {
   constructor(private readonly prisma: PrismaService) {}
 
   async list(userId: string) {
+    await ensureUserWorkspace(this.prisma, userId);
     const items = await this.prisma.financialAccount.findMany({ where: { userId }, orderBy: { name: 'asc' } });
     return items.map(toAccountResponse);
   }

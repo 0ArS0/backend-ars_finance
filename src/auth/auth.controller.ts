@@ -47,6 +47,7 @@ export class AuthController {
     return this.authService.changePassword(user.id, dto);
   }
 
+  @Public()
   @Post('logout')
   async logout(@Req() request: AuthenticatedRequest, @Res({ passthrough: true }) response: Response) {
     await this.authService.logout(this.readCookie(request.headers.cookie));
@@ -65,10 +66,11 @@ export class AuthController {
   }
 
   private readCookie(value?: string) {
-    return value
+    const token = value
       ?.split(';')
       .map((item) => item.trim())
       .find((item) => item.startsWith(`${COOKIE_NAME}=`))
-      ?.slice(COOKIE_NAME.length + 1) ?? null;
+      ?.slice(COOKIE_NAME.length + 1);
+    return token ? decodeURIComponent(token) : null;
   }
 }

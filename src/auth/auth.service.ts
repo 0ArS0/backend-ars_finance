@@ -3,6 +3,7 @@ import { randomBytes, scrypt as scryptCallback, timingSafeEqual, createHash } fr
 import { promisify } from 'util';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChangePasswordDto, LoginDto, RegisterDto, UpdateProfileDto } from './dto/auth.dto';
+import { ensureUserWorkspace } from '../common/workspace-defaults';
 
 const scrypt = promisify(scryptCallback);
 const SESSION_DAYS = 30;
@@ -26,6 +27,7 @@ export class AuthService {
     });
 
     if (firstUser) await this.assignExistingData(user.id);
+    await ensureUserWorkspace(this.prisma, user.id);
     return this.toPublicUser(user);
   }
 
