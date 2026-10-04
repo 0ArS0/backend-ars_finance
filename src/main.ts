@@ -6,7 +6,7 @@ import { PrismaExceptionFilter } from './common/filters/prisma-exception.filter'
 
 config();
 
-const allowedOrigins = (process.env.FRONTEND_URL ?? 'http://localhost:3001,https://frontend-ars-finance.vercel.app')
+const allowedOrigins = (process.env.FRONTEND_URL ?? 'http://localhost:4817,http://localhost:4818,https://frontend-ars-finance.vercel.app')
   .split(',')
   .map((origin) => origin.trim())
   .filter(Boolean);
