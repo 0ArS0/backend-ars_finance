@@ -10,6 +10,12 @@ import { PluggyService } from './pluggy.service';
 export class PluggyController {
   constructor(private readonly pluggyService: PluggyService) {}
 
+  @Get()
+  @Public()
+  health() {
+    return { ok: true };
+  }
+
   @Post('connect-token')
   createConnectToken(@Body() body: CreateConnectTokenDto, @CurrentUser() user: AuthenticatedUser) {
     return this.pluggyService.createConnectToken(user.id, body.itemId);
